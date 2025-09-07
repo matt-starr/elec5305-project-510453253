@@ -1,14 +1,12 @@
 # ELEC5305 Project
 
----
-
 **Music analyser GUI**
 
 ### Description
 
 This project will be developed to be a python based GUI music analyser. The intended use case will be for musicians who want to understand things like a song's key, bpm, instrumental composition, etc..
 
-### Author(s)
+### Author
 
 *   Matt Starr (510453253)
  
