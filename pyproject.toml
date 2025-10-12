@@ -1,7 +1,11 @@
 [project]
-name = "Music Analyser GUI"
+name = "Music_Analyser_GUI"
 version = "0.1.0"
 description = "A GUI application for musicians to extract key features of a song quickly"
 readme = "README.md"
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "librosa>=0.11.0",
+    "pyqt6>=6.9.1",
+    "scikit-learn>=1.7.2",
+]
