@@ -49,8 +49,6 @@ class AudioAnalyser:
         This must be called after load_audio().
         """
         if self.y is not None:
-            # librosa.beat.tempo estimates the tempo from the audio signal.
-            # It returns an array, so we take the first element.
             self.bpm = librosa.feature.tempo(y=self.y, sr=self.sr)[0]
         else:
             print("Audio not loaded. Please call load_audio() first.")
@@ -60,7 +58,6 @@ class AudioAnalyser:
         Creates a chromagram from the audio signal.
 
         A chromagram represents the 12 different pitch classes (C, C#, D, etc.)
-        and is very useful for key detection. This must be called after load_audio().
         """
         if self.y is not None:
             # librosa.feature.chroma_stft computes a chromagram from a waveform.
@@ -68,6 +65,40 @@ class AudioAnalyser:
         else:
             print("Audio not loaded. Please call load_audio() first.")
             
+    def estimate_key(self, chroma_features):
+        """
+        Estimates the key from chromagram features.
+        """
+        # Pitch class names
+        pitches = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+        
+        # Define major and minor key profiles
+        major_profile = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1])
+        minor_profile = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0])
+
+        # Sum chroma features across time to get an overall pitch distribution
+        chroma_sum = np.sum(chroma_features, axis=1)
+        
+        correlations = []
+        # Correlate with all 12 major and 12 minor keys
+        for i in range(12):
+            # Major keys
+            major_key_profile = np.roll(major_profile, i)
+            correlations.append(np.corrcoef(chroma_sum, major_key_profile)[0, 1])
+            # Minor keys
+            minor_key_profile = np.roll(minor_profile, i)
+            correlations.append(np.corrcoef(chroma_sum, minor_key_profile)[0, 1])
+            
+        # Find the best match
+        best_match_index = np.argmax(correlations)
+        key_index = best_match_index // 2
+        is_major = best_match_index % 2 == 0
+        
+        key = pitches[key_index]
+        mode = "Major" if is_major else "Minor"
+        
+        return f"{key} {mode}"
+    
     def run_analysis(self):
         """
         Runs the full analysis pipeline.
@@ -99,16 +130,10 @@ class AudioAnalyser:
 
 
 if __name__ == '__main__':
-    # This is an example of how to use the class.
-    # To run this, you must have an audio file (e.g., 'song.wav') in the same
-    # directory as this script, or provide the full path to a file.
     
-    # IMPORTANT: Replace 'path/to/your/song.wav' with an actual file path.
-    # If you don't have a WAV file, you can install `ffmpeg` and librosa
-    # will be able to open MP3s and other formats as well.
     try:
         song_name = "Come Away With Me - Norah Jones.mp3"
-        analyser = AudioAnalyser(f'media/{song_name}') # <-- REPLACE WITH YOUR FILE
+        analyser = AudioAnalyser(f'media/{song_name}')
         analyser.run_analysis()
     except Exception as e:
         print(f"\nError: Could not find or process the audio file.")
