@@ -2,7 +2,7 @@ import sys
 import librosa
 import numpy as np
 from PyQt6.QtWidgets import (
-    QApplication, QMainWindow, QPushButton, QVBoxLayout, 
+    QApplication, QMainWindow, QPushButton, QVBoxLayout, QHBoxLayout,
     QWidget, QFileDialog, QLabel
 )
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
@@ -10,7 +10,7 @@ from matplotlib.figure import Figure
 
 class MplCanvas(FigureCanvas):
     """A custom Matplotlib canvas widget to embed in a PyQt6 application."""
-    def __init__(self, parent=None, width=5, height=6, dpi=100):
+    def __init__(self, parent=None, width=80, height=60, dpi=100):
         # Create a new Matplotlib figure
         fig = Figure(figsize=(width, height), dpi=dpi)
         # Add two subplots, stacked vertically
@@ -40,6 +40,20 @@ class MainWindow(QMainWindow):
         # --- File Info Label ---
         self.file_label = QLabel("No file loaded.")
         layout.addWidget(self.file_label)
+
+        # --- Header Row for Musical Features ---
+        header_layout = QHBoxLayout()
+        
+        self.bpm_label = QLabel("BPM: --")
+        self.key_label = QLabel("Key: --")
+        self.instruments_label = QLabel("Instruments: N/A")
+        
+        header_layout.addWidget(self.bpm_label)
+        header_layout.addWidget(self.key_label)
+        header_layout.addWidget(self.instruments_label)
+        
+        # Add the header layout to the main vertical layout
+        layout.addLayout(header_layout)
         
         # --- Matplotlib Display ---
         # This is the canvas where the plots will be drawn
@@ -59,9 +73,9 @@ class MainWindow(QMainWindow):
 
         if file_path:
             self.file_label.setText(f"Loaded: {file_path.split('/')[-1]}")
-            self.plot_features(file_path)
+            self.show_windows(file_path)
 
-    def plot_features(self, file_path):
+    def show_windows(self, file_path):
         """
         Loads an audio file and plots its waveform and chromagram.
 
@@ -70,6 +84,17 @@ class MainWindow(QMainWindow):
         """
         try:
             y, sr = librosa.load(file_path)
+
+            # --- Feature Analysis ---
+            # BPM Estimation
+            tempo = 0.0
+            self.bpm_label.setText(f"BPM: {tempo:.2f}")
+
+            # Key Estimation
+            chroma = librosa.feature.chroma_stft(y=y, sr=sr)
+            estimated_key = "TODO"
+            self.key_label.setText(f"Key: {estimated_key}")
+
             
             # --- Clear previous plots ---
             self.canvas.axes1.cla()
@@ -80,6 +105,7 @@ class MainWindow(QMainWindow):
             self.canvas.axes1.set_title("Waveform")
             self.canvas.axes1.set_xlabel(None) # Remove x-label to avoid overlap
             self.canvas.axes1.set_ylabel("Amplitude")
+            self.canvas.axes1.set_xlim(0, len(y) / sr)
             self.canvas.axes1.grid(True)
             
             # --- Plot 2: Chromagram ---
