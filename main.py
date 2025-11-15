@@ -1,6 +1,7 @@
 import sys
 import librosa
 import numpy as np
+import pygame
 import pyqtgraph as pg
 from PyQt6.QtCore import QRunnable, QThreadPool, QObject, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -70,6 +71,21 @@ class MainWindow(QMainWindow):
         self.load_button.clicked.connect(self.open_file_dialog)
         layout.addWidget(self.load_button)
 
+        # --- Playback Control Buttons ---
+        playback_layout = QHBoxLayout()
+        self.play_button = QPushButton("Play")
+        self.pause_button = QPushButton("Pause")
+        self.stop_button = QPushButton("Stop")
+        
+        self.play_button.clicked.connect(self.play_audio)
+        self.pause_button.clicked.connect(self.pause_audio)
+        self.stop_button.clicked.connect(self.stop_audio)
+
+        playback_layout.addWidget(self.play_button)
+        playback_layout.addWidget(self.pause_button)
+        playback_layout.addWidget(self.stop_button)
+        layout.addLayout(playback_layout)
+
         # --- File Info Label ---
         self.file_label = QLabel("No file loaded.")
         layout.addWidget(self.file_label)
@@ -111,6 +127,12 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.waveform_plot)
         layout.addWidget(self.chromagram_plot)
+
+        # --- Audio Playback ---
+        pygame.init()
+        pygame.mixer.init()
+        self.current_file = None
+        self.is_paused = False
 
     def open_file_dialog(self):
         """
@@ -182,6 +204,29 @@ class MainWindow(QMainWindow):
         img.setRect(0, 0, time_axis[-1], 12)
         self.chromagram_plot.setYRange(0, 12)
         self.chromagram_plot.setXRange(0, time_axis[-1])
+
+        self.current_file = analyser.file_path
+        self.is_paused = False
+
+    def play_audio(self):
+        if self.current_file:
+            if not pygame.mixer.music.get_busy() and not self.is_paused:
+                pygame.mixer.music.load(self.current_file)
+                pygame.mixer.music.play()
+            elif self.is_paused:
+                pygame.mixer.music.unpause()
+                self.is_paused = False
+        else:
+            self.show_error_dialog("No audio file loaded.")
+
+    def pause_audio(self):
+        if pygame.mixer.music.get_busy() and not self.is_paused:
+            pygame.mixer.music.pause()
+            self.is_paused = True
+
+    def stop_audio(self):
+        pygame.mixer.music.stop()
+        self.is_paused = False
 
     def analysis_error(self, error_tuple):
         """Handles errors from the worker thread."""
