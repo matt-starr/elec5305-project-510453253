@@ -50,7 +50,9 @@ class AudioAnalyser:
         This must be called after load_audio().
         """
         if self.y is not None:
-            self.bpm = librosa.feature.tempo(y=self.y, sr=self.sr)[0]
+            # Using beat_track is generally more robust than feature.tempo
+            tempo, _ = librosa.beat.beat_track(y=self.y, sr=self.sr)
+            self.bpm = tempo
         else:
             print("Audio not loaded. Please call load_audio() first.")
 
@@ -73,22 +75,23 @@ class AudioAnalyser:
         # Pitch class names
         pitches = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
         
-        # Define major and minor key profiles
-        major_profile = np.array([1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0, 1])
-        minor_profile = np.array([1, 0, 1, 1, 0, 1, 0, 1, 1, 0, 1, 0])
+        # Krumhansl-Schmuckler key profiles
+        major_profile = np.array([6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88])
+        minor_profile = np.array([6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.78, 3.98, 2.69, 3.34, 3.17])
 
-        # Sum chroma features across time to get an overall pitch distribution
+        # Sum chroma features across time and normalize
         chroma_sum = np.sum(chroma_features, axis=1)
+        chroma_sum_normalized = chroma_sum / np.sum(chroma_sum) if np.sum(chroma_sum) > 0 else chroma_sum
         
         correlations = []
         # Correlate with all 12 major and 12 minor keys
         for i in range(12):
             # Major keys
             major_key_profile = np.roll(major_profile, i)
-            correlations.append(np.corrcoef(chroma_sum, major_key_profile)[0, 1])
+            correlations.append(np.corrcoef(chroma_sum_normalized, major_key_profile)[0, 1])
             # Minor keys
             minor_key_profile = np.roll(minor_profile, i)
-            correlations.append(np.corrcoef(chroma_sum, minor_key_profile)[0, 1])
+            correlations.append(np.corrcoef(chroma_sum_normalized, minor_key_profile)[0, 1])
             
         # Find the best match
         best_match_index = np.argmax(correlations)

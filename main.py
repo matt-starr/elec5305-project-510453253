@@ -3,7 +3,7 @@ import librosa
 import numpy as np
 import pygame
 import pyqtgraph as pg
-from PyQt6.QtCore import QRunnable, QThreadPool, QObject, pyqtSignal
+from PyQt6.QtCore import QRunnable, QThreadPool, QObject, pyqtSignal, QTimer, QThread
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QVBoxLayout, QHBoxLayout,
     QWidget, QFileDialog, QLabel, QMessageBox, QProgressBar
@@ -47,7 +47,65 @@ class AnalysisWorker(QRunnable):
         finally:
             self.signals.finished.emit()
 
+class PlaybackWorker(QObject):
+    """Worker for handling audio playback in a separate thread."""
+    positionChanged = pyqtSignal(float)
+    finished = pyqtSignal()
 
+    def __init__(self):
+        super().__init__()
+        self.current_file = None
+        self.is_paused = False
+        self._is_running = False
+        self.timer = None
+
+    def load_file(self, file_path):
+        self.current_file = file_path
+        pygame.mixer.init()
+        pygame.mixer.music.load(self.current_file)
+
+    def play(self):
+        if self.current_file:
+            if not self._is_running:
+                pygame.mixer.music.play()
+                self._is_running = True
+                self.is_paused = False
+                
+                # This timer will run in the new thread's event loop
+                self.timer = QTimer()
+                self.timer.setInterval(100)
+                self.timer.timeout.connect(self.update_position)
+                self.timer.start()
+            elif self.is_paused:
+                pygame.mixer.music.unpause()
+                self.is_paused = False
+                if self.timer:
+                    self.timer.start()
+
+    def pause(self):
+        if self._is_running and not self.is_paused:
+            pygame.mixer.music.pause()
+            self.is_paused = True
+            if self.timer:
+                self.timer.stop()
+
+    def stop(self):
+        if self._is_running:
+            pygame.mixer.music.stop()
+            self._is_running = False
+            self.is_paused = False
+            if self.timer:
+                self.timer.stop()
+            self.positionChanged.emit(0)
+
+    def update_position(self):
+        if pygame.mixer.music.get_busy() and self._is_running and not self.is_paused:
+            pos_ms = pygame.mixer.music.get_pos()
+            pos_s = pos_ms / 1000.0
+            self.positionChanged.emit(pos_s)
+        elif self._is_running: # Song finished
+            self.stop()
+            self.finished.emit()
 
 
 class MainWindow(QMainWindow):
@@ -97,6 +155,13 @@ class MainWindow(QMainWindow):
         self.key_label = QLabel("Key: --")
         self.time_signature_label = QLabel("Time Signature: --")
         self.instruments_label = QLabel("Instruments: N/A")
+
+        # --- Style for feature labels ---
+        feature_label_style = "font-size: 14pt; font-weight: bold;"
+        self.bpm_label.setStyleSheet(feature_label_style)
+        self.key_label.setStyleSheet(feature_label_style)
+        self.time_signature_label.setStyleSheet(feature_label_style)
+        self.instruments_label.setStyleSheet(feature_label_style)
         
         header_layout.addWidget(self.bpm_label)
         header_layout.addWidget(self.key_label)
@@ -128,11 +193,25 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.waveform_plot)
         layout.addWidget(self.chromagram_plot)
 
-        # --- Audio Playback ---
-        pygame.init()
-        pygame.mixer.init()
+        # --- Playback Indicator Lines ---
+        self.waveform_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('y', width=2))
+        self.chromagram_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('y', width=2))
+        self.waveform_plot.addItem(self.waveform_line, ignoreBounds=True)
+        self.chromagram_plot.addItem(self.chromagram_line, ignoreBounds=True)
+        self.waveform_line.hide()
+        self.chromagram_line.hide()
+
+        # --- Audio Playback Thread ---
+        self.playback_thread = QThread()
+        self.playback_worker = PlaybackWorker()
+        self.playback_worker.moveToThread(self.playback_thread)
+
+        self.playback_worker.positionChanged.connect(self.update_playback_position)
+        self.playback_worker.finished.connect(self.on_playback_finished)
+
+        self.playback_thread.start()
+
         self.current_file = None
-        self.is_paused = False
 
     def open_file_dialog(self):
         """
@@ -174,13 +253,19 @@ class MainWindow(QMainWindow):
         estimated_key = analyser.estimate_key(analyser.chromagram)
         
         self.file_label.setText(f"Loaded: {analyser.file_path.split('/')[-1]}")
-        self.bpm_label.setText(f"BPM: {analyser.bpm:.2f}")
+        self.bpm_label.setText(f"BPM: {np.median(analyser.bpm):.2f}")
         self.key_label.setText(f"Key: {estimated_key}")
         self.time_signature_label.setText(f"Time Signature: {analyser.time_signature}")
 
         # --- Clear and update plots ---
         self.waveform_plot.clear()
         self.chromagram_plot.clear()
+
+        # --- Add playback lines back to plots after clearing ---
+        self.waveform_plot.addItem(self.waveform_line, ignoreBounds=True)
+        self.chromagram_plot.addItem(self.chromagram_line, ignoreBounds=True)
+        self.waveform_line.setPos(0)
+        self.chromagram_line.setPos(0)
 
         # --- Plot 1: Waveform ---
         time_axis = np.linspace(0, len(analyser.y) / analyser.sr, num=len(analyser.y))
@@ -206,27 +291,32 @@ class MainWindow(QMainWindow):
         self.chromagram_plot.setXRange(0, time_axis[-1])
 
         self.current_file = analyser.file_path
-        self.is_paused = False
+        self.playback_worker.load_file(self.current_file)
 
     def play_audio(self):
         if self.current_file:
-            if not pygame.mixer.music.get_busy() and not self.is_paused:
-                pygame.mixer.music.load(self.current_file)
-                pygame.mixer.music.play()
-            elif self.is_paused:
-                pygame.mixer.music.unpause()
-                self.is_paused = False
+            self.playback_worker.play()
+            self.waveform_line.show()
+            self.chromagram_line.show()
         else:
             self.show_error_dialog("No audio file loaded.")
 
     def pause_audio(self):
-        if pygame.mixer.music.get_busy() and not self.is_paused:
-            pygame.mixer.music.pause()
-            self.is_paused = True
+        self.playback_worker.pause()
 
     def stop_audio(self):
-        pygame.mixer.music.stop()
-        self.is_paused = False
+        self.playback_worker.stop()
+        self.waveform_line.setPos(0)
+        self.chromagram_line.setPos(0)
+        self.waveform_line.hide()
+        self.chromagram_line.hide()
+
+    def update_playback_position(self, pos_s):
+        self.waveform_line.setPos(pos_s)
+        self.chromagram_line.setPos(pos_s)
+
+    def on_playback_finished(self):
+        self.stop_audio()
 
     def analysis_error(self, error_tuple):
         """Handles errors from the worker thread."""
@@ -251,6 +341,11 @@ class MainWindow(QMainWindow):
         dlg.setText(message)
         dlg.setIcon(QMessageBox.Icon.Critical)
         dlg.exec()
+
+    def closeEvent(self, event):
+        self.playback_thread.quit()
+        self.playback_thread.wait()
+        super().closeEvent(event)
 
 # --- Main execution block ---
 if __name__ == '__main__':
