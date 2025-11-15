@@ -1,12 +1,51 @@
 import sys
 import librosa
 import numpy as np
+from PyQt6.QtCore import QRunnable, QThreadPool, QObject, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QVBoxLayout, QHBoxLayout,
-    QWidget, QFileDialog, QLabel
+    QWidget, QFileDialog, QLabel, QMessageBox
 )
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
+from analyse import AudioAnalyser
+
+class WorkerSignals(QObject):
+    '''
+    Defines the signals available from a running worker thread.
+    Supported signals are:
+    - finished: No data
+    - error: tuple (exctype, value, traceback.format_exc())
+    - result: object data returned from processing
+    '''
+    finished = pyqtSignal()
+    error = pyqtSignal(tuple)
+    result = pyqtSignal(object)
+
+class AnalysisWorker(QRunnable):
+    '''
+    Worker thread for running the audio analysis.
+    '''
+    def __init__(self, file_path):
+        super().__init__()
+        self.file_path = file_path
+        self.signals = WorkerSignals()
+
+    def run(self):
+        try:
+            analyser = AudioAnalyser(self.file_path)
+            if not analyser.load_audio():
+                raise ValueError("Could not load the audio file.")
+            
+            analyser.extract_bpm()
+            analyser.extract_chromagram()
+            
+            self.signals.result.emit(analyser)
+        except Exception as e:
+            self.signals.error.emit((type(e), e, e.__traceback__))
+        finally:
+            self.signals.finished.emit()
+
 
 class MplCanvas(FigureCanvas):
     """A custom Matplotlib canvas widget to embed in a PyQt6 application."""
@@ -26,6 +65,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("ELEC5305 Music Analyser")
         self.setGeometry(100, 100, 1000, 800)
 
+        # --- Thread Pool for background tasks ---
+        self.threadpool = QThreadPool()
+
         # --- Central Widget and Layout ---
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
@@ -33,7 +75,6 @@ class MainWindow(QMainWindow):
 
         # --- Load File Button ---
         self.load_button = QPushButton("Load Audio File")
-        # Connect the button's 'clicked' signal to the open_file_dialog method
         self.load_button.clicked.connect(self.open_file_dialog)
         layout.addWidget(self.load_button)
 
@@ -52,11 +93,9 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self.key_label)
         header_layout.addWidget(self.instruments_label)
         
-        # Add the header layout to the main vertical layout
         layout.addLayout(header_layout)
         
         # --- Matplotlib Display ---
-        # This is the canvas where the plots will be drawn
         self.canvas = MplCanvas(self, width=80, height=60, dpi=100)
         layout.addWidget(self.canvas)
 
@@ -67,65 +106,77 @@ class MainWindow(QMainWindow):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Open Audio File",
-            "",  # Start directory
+            "",
             "Audio Files (*.wav *.mp3);;All Files (*)"
         )
 
         if file_path:
-            self.file_label.setText(f"Loaded: {file_path.split('/')[-1]}")
-            self.show_windows(file_path)
+            self.file_label.setText(f"Loading: {file_path.split('/')[-1]}...")
+            self.start_analysis(file_path)
 
-    def show_windows(self, file_path):
+    def start_analysis(self, file_path):
         """
-        Loads an audio file and plots its waveform and chromagram.
-
-        Args:
-            file_path (str): The path to the audio file.
+        Starts the audio analysis in a background thread.
         """
-        try:
-            y, sr = librosa.load(file_path)
+        self.load_button.setEnabled(False)
+        self.bpm_label.setText("BPM: Analyzing...")
+        self.key_label.setText("Key: Analyzing...")
 
-            # --- Feature Analysis ---
-            # BPM Estimation
-            tempo = 0.0
-            self.bpm_label.setText(f"BPM: {tempo:.2f}")
+        worker = AnalysisWorker(file_path)
+        worker.signals.result.connect(self.analysis_complete)
+        worker.signals.error.connect(self.analysis_error)
+        worker.signals.finished.connect(self.analysis_finished)
+        
+        self.threadpool.start(worker)
 
-            # Key Estimation
-            chroma = librosa.feature.chroma_stft(y=y, sr=sr)
-            estimated_key = "TODO"
-            self.key_label.setText(f"Key: {estimated_key}")
+    def analysis_complete(self, analyser):
+        """
+        This function is called when the analysis worker has finished.
+        It updates the GUI with the results.
+        """
+        estimated_key = analyser.estimate_key(analyser.chromagram)
+        
+        self.file_label.setText(f"Loaded: {analyser.file_path.split('/')[-1]}")
+        self.bpm_label.setText(f"BPM: {analyser.bpm:.2f}")
+        self.key_label.setText(f"Key: {estimated_key}")
 
-            
-            # --- Clear previous plots ---
-            self.canvas.axes1.cla()
-            self.canvas.axes2.cla()
+        # --- Clear and update plots ---
+        self.canvas.axes1.cla()
+        self.canvas.axes2.cla()
 
-            # --- Plot 1: Waveform ---
-            librosa.display.waveshow(y, sr=sr, ax=self.canvas.axes1, color='blue', alpha=0.5)
-            self.canvas.axes1.set_title("Waveform")
-            self.canvas.axes1.set_xlabel(None) # Remove x-label to avoid overlap
-            self.canvas.axes1.set_ylabel("Amplitude")
-            self.canvas.axes1.set_xlim(0, len(y) / sr)
-            self.canvas.axes1.grid(True)
-            
-            # --- Plot 2: Chromagram ---
-            # Extract the chromagram
-            chroma = librosa.feature.chroma_stft(y=y, sr=sr)
-            # Display the chromagram
-            img = librosa.display.specshow(chroma, y_axis='chroma', x_axis='time', ax=self.canvas.axes2)
-            self.canvas.axes2.set_title("Chromagram")
-            self.canvas.axes2.set_xlabel("Time (s)")
-            self.canvas.axes2.set_ylabel("Pitch Class")
+        librosa.display.waveshow(analyser.y, sr=analyser.sr, ax=self.canvas.axes1, color='blue', alpha=0.5)
+        self.canvas.axes1.set_title("Waveform")
+        self.canvas.axes1.set_xlabel(None)
+        self.canvas.axes1.set_ylabel("Amplitude")
+        self.canvas.axes1.set_xlim(0, len(analyser.y) / analyser.sr)
+        self.canvas.axes1.grid(True)
 
-            # Adjust layout to prevent titles/labels from overlapping
-            # self.canvas.figure.tight_layout()
-            
-            # Redraw the canvas to show the new plots
-            self.canvas.draw()
-            
-        except Exception as e:
-            self.file_label.setText(f"Error loading file: {e}")
-            print(f"Error: {e}")
+        librosa.display.specshow(analyser.chromagram, y_axis='chroma', x_axis='time', ax=self.canvas.axes2)
+        self.canvas.axes2.set_title("Chromagram")
+        self.canvas.axes2.set_xlabel("Time (s)")
+        self.canvas.axes2.set_ylabel("Pitch Class")
+        
+        self.canvas.draw()
+
+    def analysis_error(self, error_tuple):
+        """Handles errors from the worker thread."""
+        error_message = f"An error occurred: {error_tuple[1]}"
+        self.show_error_dialog(error_message)
+        self.file_label.setText("Error processing file.")
+        self.bpm_label.setText("BPM: --")
+        self.key_label.setText("Key: --")
+
+    def analysis_finished(self):
+        """Called when the worker thread has finished."""
+        self.load_button.setEnabled(True)
+
+    def show_error_dialog(self, message):
+        """Displays an error message in a dialog box."""
+        dlg = QMessageBox(self)
+        dlg.setWindowTitle("Error")
+        dlg.setText(message)
+        dlg.setIcon(QMessageBox.Icon.Critical)
+        dlg.exec()
 
 # --- Main execution block ---
 if __name__ == '__main__':
