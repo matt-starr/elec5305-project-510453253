@@ -25,6 +25,7 @@ class AudioAnalyser:
         self.sr = None
         self.bpm = 0.0
         self.chromagram = None
+        self.time_signature = "N/A"
 
     def load_audio(self):
         """
@@ -99,6 +100,65 @@ class AudioAnalyser:
         
         return f"{key} {mode}"
     
+    def estimate_time_signature(self):
+        """
+        Estimates the time signature of the track.
+        This is a simplified implementation and may not be accurate for all songs.
+        """
+        if self.y is None:
+            print("Audio not loaded.")
+            return "N/A"
+
+        # Get the onset strength envelope
+        onset_env = librosa.onset.onset_detect(y=self.y, sr=self.sr, units='time')
+        
+        # Find the beats
+        tempo, beats = librosa.beat.beat_track(y=self.y, sr=self.sr)
+        
+        # Calculate beat intervals
+        beat_intervals = np.diff(beats)
+        
+        if len(beat_intervals) < 2:
+            return "N/A"
+
+        # We can try to guess the meter by looking at the distribution of beat intervals
+        # This is a very simplified approach
+        # A more robust method would involve looking at accent patterns
+        
+        # Let's try to find a recurring pattern of 2, 3, or 4 beats
+        # We'll check the strength of onsets around each beat
+        
+        # Get onset strength
+        onset_strength = librosa.onset.onset_strength(y=self.y, sr=self.sr)
+        
+        beat_strengths = []
+        for beat_frame in beats:
+            # Get the onset strength at the beat frame
+            # We look at a small window around the beat
+            start_frame = max(0, beat_frame - 2)
+            end_frame = min(len(onset_strength), beat_frame + 2)
+            beat_strengths.append(np.mean(onset_strength[start_frame:end_frame]))
+
+        if len(beat_strengths) < 4:
+            return "4/4" # Default for short samples
+
+        # Check for patterns of 2, 3, 4
+        best_meter = 4
+        max_diff = 0
+
+        for meter in [2, 3, 4]:
+            # Check the difference between the first beat and the others in a bar
+            avg_first_beat = np.mean([beat_strengths[i] for i in range(len(beat_strengths)) if i % meter == 0])
+            avg_other_beats = np.mean([beat_strengths[i] for i in range(len(beat_strengths)) if i % meter != 0])
+            
+            diff = avg_first_beat - avg_other_beats
+            
+            if diff > max_diff:
+                max_diff = diff
+                best_meter = meter
+                
+        return f"{best_meter}/4"
+
     def run_analysis(self):
         """
         Runs the full analysis pipeline.
@@ -106,6 +166,7 @@ class AudioAnalyser:
         if self.load_audio():
             self.extract_bpm()
             self.extract_chromagram()
+            self.time_signature = self.estimate_time_signature()
             self.print_results()
 
     def print_results(self):

@@ -1,13 +1,12 @@
 import sys
 import librosa
 import numpy as np
+import pyqtgraph as pg
 from PyQt6.QtCore import QRunnable, QThreadPool, QObject, pyqtSignal
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QPushButton, QVBoxLayout, QHBoxLayout,
-    QWidget, QFileDialog, QLabel, QMessageBox
+    QWidget, QFileDialog, QLabel, QMessageBox, QProgressBar
 )
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
 from analyse import AudioAnalyser
 
 class WorkerSignals(QObject):
@@ -39,6 +38,7 @@ class AnalysisWorker(QRunnable):
             
             analyser.extract_bpm()
             analyser.extract_chromagram()
+            analyser.time_signature = analyser.estimate_time_signature()
             
             self.signals.result.emit(analyser)
         except Exception as e:
@@ -47,15 +47,7 @@ class AnalysisWorker(QRunnable):
             self.signals.finished.emit()
 
 
-class MplCanvas(FigureCanvas):
-    """A custom Matplotlib canvas widget to embed in a PyQt6 application."""
-    def __init__(self, parent=None, width=80, height=60, dpi=100):
-        # Create a new Matplotlib figure
-        fig = Figure(figsize=(width, height), dpi=dpi)
-        # Add two subplots, stacked vertically
-        self.axes1 = fig.add_subplot(211) # For the waveform
-        self.axes2 = fig.add_subplot(212) # For the chromagram
-        super(MplCanvas, self).__init__(fig)
+
 
 class MainWindow(QMainWindow):
     """The main window of the Music Analyser application."""
@@ -87,17 +79,38 @@ class MainWindow(QMainWindow):
         
         self.bpm_label = QLabel("BPM: --")
         self.key_label = QLabel("Key: --")
+        self.time_signature_label = QLabel("Time Signature: --")
         self.instruments_label = QLabel("Instruments: N/A")
         
         header_layout.addWidget(self.bpm_label)
         header_layout.addWidget(self.key_label)
+        header_layout.addWidget(self.time_signature_label)
         header_layout.addWidget(self.instruments_label)
         
         layout.addLayout(header_layout)
         
-        # --- Matplotlib Display ---
-        self.canvas = MplCanvas(self, width=80, height=60, dpi=100)
-        layout.addWidget(self.canvas)
+        # --- Progress Bar ---
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0)  # Indeterminate
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+        
+        # --- Plotting Widgets ---
+        self.waveform_plot = pg.PlotWidget()
+        self.chromagram_plot = pg.PlotWidget()
+        
+        self.waveform_plot.setBackground(None)
+        self.chromagram_plot.setBackground(None)
+
+        self.waveform_plot.setLabel('left', 'Amplitude')
+        self.waveform_plot.setTitle('Waveform')
+        
+        self.chromagram_plot.setLabel('left', 'Pitch Class')
+        self.chromagram_plot.setLabel('bottom', 'Time (s)')
+        self.chromagram_plot.setTitle('Chromagram')
+
+        layout.addWidget(self.waveform_plot)
+        layout.addWidget(self.chromagram_plot)
 
     def open_file_dialog(self):
         """
@@ -118,9 +131,11 @@ class MainWindow(QMainWindow):
         """
         Starts the audio analysis in a background thread.
         """
+        self.progress_bar.setVisible(True)
         self.load_button.setEnabled(False)
         self.bpm_label.setText("BPM: Analyzing...")
         self.key_label.setText("Key: Analyzing...")
+        self.time_signature_label.setText("Time Signature: Analyzing...")
 
         worker = AnalysisWorker(file_path)
         worker.signals.result.connect(self.analysis_complete)
@@ -132,31 +147,41 @@ class MainWindow(QMainWindow):
     def analysis_complete(self, analyser):
         """
         This function is called when the analysis worker has finished.
-        It updates the GUI with the results.
+        It updates the GUI with the results using pyqtgraph.
         """
         estimated_key = analyser.estimate_key(analyser.chromagram)
         
         self.file_label.setText(f"Loaded: {analyser.file_path.split('/')[-1]}")
         self.bpm_label.setText(f"BPM: {analyser.bpm:.2f}")
         self.key_label.setText(f"Key: {estimated_key}")
+        self.time_signature_label.setText(f"Time Signature: {analyser.time_signature}")
 
         # --- Clear and update plots ---
-        self.canvas.axes1.cla()
-        self.canvas.axes2.cla()
+        self.waveform_plot.clear()
+        self.chromagram_plot.clear()
 
-        librosa.display.waveshow(analyser.y, sr=analyser.sr, ax=self.canvas.axes1, color='blue', alpha=0.5)
-        self.canvas.axes1.set_title("Waveform")
-        self.canvas.axes1.set_xlabel(None)
-        self.canvas.axes1.set_ylabel("Amplitude")
-        self.canvas.axes1.set_xlim(0, len(analyser.y) / analyser.sr)
-        self.canvas.axes1.grid(True)
+        # --- Plot 1: Waveform ---
+        time_axis = np.linspace(0, len(analyser.y) / analyser.sr, num=len(analyser.y))
+        self.waveform_plot.plot(time_axis, analyser.y, pen=pg.mkPen(color='#5A2A82', width=1))
 
-        librosa.display.specshow(analyser.chromagram, y_axis='chroma', x_axis='time', ax=self.canvas.axes2)
-        self.canvas.axes2.set_title("Chromagram")
-        self.canvas.axes2.set_xlabel("Time (s)")
-        self.canvas.axes2.set_ylabel("Pitch Class")
+        # --- Plot 2: Chromagram ---
+        img = pg.ImageItem(image=analyser.chromagram)
+        self.chromagram_plot.addItem(img)
+
+        # Set y-axis ticks for chromagram
+        pitch_classes = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+        y_axis = self.chromagram_plot.getAxis('left')
+        ticks = [(i, pitch) for i, pitch in enumerate(pitch_classes)]
+        y_axis.setTicks([ticks])
         
-        self.canvas.draw()
+        # Set the color map for the image
+        cmap = pg.colormap.get('viridis')
+        img.setLookupTable(cmap.getLookupTable())
+        
+        # Scale the image correctly
+        img.setRect(0, 0, time_axis[-1], 12)
+        self.chromagram_plot.setYRange(0, 12)
+        self.chromagram_plot.setXRange(0, time_axis[-1])
 
     def analysis_error(self, error_tuple):
         """Handles errors from the worker thread."""
@@ -165,9 +190,13 @@ class MainWindow(QMainWindow):
         self.file_label.setText("Error processing file.")
         self.bpm_label.setText("BPM: --")
         self.key_label.setText("Key: --")
+        self.time_signature_label.setText("Time Signature: --")
+        self.waveform_plot.clear()
+        self.chromagram_plot.clear()
 
     def analysis_finished(self):
         """Called when the worker thread has finished."""
+        self.progress_bar.setVisible(False)
         self.load_button.setEnabled(True)
 
     def show_error_dialog(self, message):
@@ -181,6 +210,50 @@ class MainWindow(QMainWindow):
 # --- Main execution block ---
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+
+    # --- Dark Theme with Purple Accents ---
+    app.setStyleSheet("""
+        QWidget {
+            background-color: #2E2E2E;
+            color: #F0F0F0;
+            font-family: Arial, sans-serif;
+        }
+        QMainWindow {
+            background-color: #252525;
+        }
+        QPushButton {
+            background-color: #5A2A82;
+            color: #FFFFFF;
+            border: 1px solid #6A3A92;
+            padding: 8px;
+            border-radius: 4px;
+        }
+        QPushButton:hover {
+            background-color: #6A3A92;
+        }
+        QPushButton:pressed {
+            background-color: #4A1A72;
+        }
+        QPushButton:disabled {
+            background-color: #404040;
+            color: #808080;
+        }
+        QLabel {
+            color: #E0E0E0;
+            padding: 2px;
+        }
+        QProgressBar {
+            border: 1px solid #5A2A82;
+            border-radius: 4px;
+            text-align: center;
+        }
+        QProgressBar::chunk {
+            background-color: #5A2A82;
+            width: 10px; 
+            margin: 0.5px;
+        }
+    """)
+
     main_win = MainWindow()
     main_win.show()
     sys.exit(app.exec())
