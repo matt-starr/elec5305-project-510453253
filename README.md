@@ -2,15 +2,13 @@
 
 **Author:** Matt Starr (510453253)  
 **Course:** ELEC5305 - University of Sydney  
-**Status:** In Development
+**Status:** Submitted for review
 
 ---
 
 ### Description
 
 This project is a desktop GUI application designed for musicians and music enthusiasts. It allows users to load an audio file (`.wav`, `.mp3`) and analyses it to extract and display key musical features. The goal is to provide a simple, open-source tool to help with music transcription and analysis, automating tasks like finding a song's key and tempo.
-W
-
 
 ### Features
 
